@@ -34,10 +34,11 @@ with open(output_path, "wb") as outfile:
         for e, row in enumerate(reader):
             if e % 100000 == 0:
                 print "writing line ...", e
-            if row['ncodpers'] in customer_existing_products:
-                products_left = [x for x in ranked_products if x not in customer_existing_products[row['ncodpers']]]
-            else:
-                products_left = ranked_products
+            #if row['ncodpers'] in customer_existing_products:
+            #    products_left = [x for x in ranked_products if x not in customer_existing_products[row['ncodpers']]]
+            #else:
+            #    products_left = ranked_products
+            products_left = ranked_products
             outfile.write("%s,%s\n"%(str(row['ncodpers']), ' '.join(products_left[:k])))
 
 
