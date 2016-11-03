@@ -1,0 +1,238 @@
+---
+title: "Analysis"
+output: html_notebook
+---
+
+Here is a summary of the trainset. In this dataset, we have two kinds of features/reponses: 1. common features (1-24) 2. product features (25-48)
+
+```{r}
+require(data.table, quietly = TRUE)
+require(dplyr, quietly = TRUE)
+
+#the reason that five features are read as character is that they are actually binary variables easy to convert to 0,1
+colclasses <- list(
+  integer = c("ncodpers", "ind_nuevo", "antiguedad", "age",  "ind_actividad_cliente"),
+  numeric = c("renta"),
+  factor = c("ind_empleado", "pais_residencia", "indrel_1mes", "tiprel_1mes",  "canal_entrada", "cod_prov", "nomprov", "segmento"),
+  character = c("sexo", "indrel", "indresi", "indext", "indfall", "conyuemp"),
+  date = c("fecha_dato", "ult_fec_cli_1t", "fecha_alta"))
+naStrings <- c("", " ", "NA")
+trainSet <- fread("train.csv", verbose = FALSE, na.strings = naStrings)
+nTrain <- nrow(trainSet)
+featureDescription <- fread("description.csv", verbose = FALSE)
+summary(trainSet)
+```
+
+Note that indresi and indext may need special attention here, which is not taken care of right now.
+
+```{r}
+testSet <- fread("test.csv", header = TRUE, verbose = FALSE, na.strings = naStrings)
+nTest <- nrow(testSet)
+commonFeatureNames <- colnames(trainSet)[1:24]
+productFeatureNames <- colnames(trainSet)[25:48]
+testSet[,productFeatureNames] <- NA
+wholeSet <- rbindlist(list(trainSet, testSet))
+```
+
+Let us remove the non-product features with too many NA values. The features to remove are
+
+```{r}
+naRatios <- colMeans(is.na(wholeSet[, 1:24, with = FALSE]))
+withTooManyNas <- naRatios > 0.9
+for (feature in names(which(withTooManyNas))){
+  cat(sprintf("feature %s is removed, with NA ratio being %.3f.\n", feature, naRatios[feature]))  
+}
+wholeSet[, which(withTooManyNas):=NULL]
+commonFeatureNames <- commonFeatureNames[!withTooManyNas]
+```
+
+Then we remove the numeric features with very little variance:
+
+```{r}
+withLittleVariance <- sapply(commonFeatureNames, function(featureName) is.numeric(wholeSet[[featureName]]) && (var(wholeSet[[featureName]], na.rm = TRUE)) < 0.01)
+
+for (feature in commonFeatureNames[which(withLittleVariance)]){
+  cat(sprintf("feature %s is removed.\n", feature))  
+}
+
+wholeSet[, which(withLittleVariance):=NULL]
+commonFeatureNames <- commonFeatureNames[which(!withLittleVariance[1:length(commonFeatureNames)])]
+```
+
+Now let us look at the features with NAs
+```{r}
+nCommonFeatures <- length(commonFeatureNames)
+nProductFeatures <- 24
+CheckFeaturesWithNas <- function(nCommonFeatures){
+  nTotal <- wholeSet %>% nrow
+  naRatioCommonFeatures <- sapply(wholeSet[, 1:nCommonFeatures, with = FALSE], function(feature) mean(is.na(feature)))
+  naRatioProductFeatures <- sapply(wholeSet[1:(nTotal-nTest), 1:nProductFeatures + nCommonFeatures, with = FALSE], function(feature) mean(is.na(feature)))
+  naRatio <- c(naRatioCommonFeatures, naRatioProductFeatures)
+
+  hasNa <- naRatio != 0
+  colnamesWithNa <- colnames(wholeSet)[hasNa]
+  naRatio <- naRatio[hasNa]
+  if (length(naRatio) == 0){
+    cat("No NAs!")
+    return()
+  }
+
+  for(i in 1:length(naRatio)){
+    colname <- colnamesWithNa[i]
+    cat(sprintf("Col %s has %d NAs with ratio being %.3f %%: %s\n", colname, ceiling(naRatio[i] * nrow(wholeSet)), naRatio[i] * 100, featureDescription$Description[featureDescription$`Column Name` == colname]))
+  }
+}
+CheckFeaturesWithNas(nCommonFeatures)
+```
+
+It looks very suspiciout that some features have the same number of NAs. It turns out that it is the same set of samples that have those missing features: `ind_empleado`, `pais_residencia`, `age`, `fecha_alta`, `ind_nuevo`, `antiguedad`, `indrel`, `indresi`, `indext`, `indfall`.
+
+```{r}
+areNas <- is.na(wholeSet$ind_empleado)
+all(areNas == is.na(wholeSet$pais_residencia))
+all(areNas == is.na(wholeSet$age))
+all(areNas == is.na(wholeSet$fecha_alta))
+all(areNas == is.na(wholeSet$ind_nuevo))
+all(areNas == is.na(wholeSet$antiguedad))
+all(areNas == is.na(wholeSet$indrel))
+all(areNas == is.na(wholeSet$indresi))
+all(areNas == is.na(wholeSet$indext))
+all(areNas == is.na(wholeSet$indfall))
+```
+
+Now let us check these samples:
+
+```{r}
+naDataTable <- wholeSet[areNas, ]
+tail(naDataTable, 15)
+```
+
+It looks like these samples misses all common features. Let us verify the hypo:
+
+```{r}
+allValuesMissing <- sapply(commonFeatureNames[3:nCommonFeatures], function(featureName){
+  all(is.na(naDataTable[[featureName]]))
+})
+
+all(allValuesMissing)
+```
+
+It seems that maybe all data associated with these ncodpers in this set are corrupted. Let us verify:
+
+```{r}
+ncodpers <- naDataTable$ncodpers %>% unique
+cat(sprintf("We have %d unique customers", length(ncodpers)))
+withIds <- wholeSet$ncodpers %in% ncodpers
+ntotalTransactions <- withIds %>% sum
+
+cat(sprintf("We have %d instances of this customers in the whole dataset, while %d of those instances miss all common features", ntotalTransactions, nrow(naDataTable)))
+```
+
+So this hypo is not entirely true, but almost true. To see if it is safe to remove all those instances, we have to make sure there are no instances in test set that can benefit from those instances. The instances to predict that can benefit from those bad instances are also the ones with common features missing.
+
+Then let us check if there are samples in test set like this:
+
+```{r}
+is.na(testSet) %>% colSums
+```
+
+As the results shows, we do not have instances with all common features missing to predict. So we can safely remove those broken data from whole/train dataset.
+
+```{r}
+wholeSet <- wholeSet[!areNas, ]
+```
+
+Now we check again which features still have missing values
+
+```{r}
+CheckFeaturesWithNas(length(commonFeatureNames))
+```
+
+Now we preprocess the dataset, together with the test set.
+
+As we can see, we have 5 customers with gender info REALLY missing, we impute them with the mode number.
+```{r}
+# sexo
+uids <- wholeSet$ncodpers[is.na(wholeSet$sexo)] %>% unique()
+print(uids)
+wholeSet[wholeSet$ncodpers %in%uids, ]
+wholeSet$sexo[is.na(wholeSet$sexo)] <- "V"
+table(wholeSet$sexo)
+```
+
+```{r}
+# indrel_1mes: Customer type at the beginning of the month ,1 (First/Primary customer), 2 (co-owner ),P (Potential),3 (former primary), 4(former co-owner)
+tb <- table(wholeSet$indrel_1mes)
+wholeSet$indrel_1mes[wholeSet$indrel_1mes == "1.0"] <- "1"
+wholeSet$indrel_1mes[wholeSet$indrel_1mes == "2.0"] <- "2"
+wholeSet$indrel_1mes[wholeSet$indrel_1mes == "3.0"] <- "3"
+wholeSet$indrel_1mes[wholeSet$indrel_1mes == "4.0"] <- "4"
+tb <- table(wholeSet$indrel_1mes)
+wholeSet$indrel_1mes[is.na(wholeSet$indrel_1mes)] <- names(which.max(tb))[1]
+table(wholeSet$indrel_1mes)
+```
+
+```{r}
+# tiprel_1mes: Customer relation type at the beginning of the month, A (active), I (inactive), P (former customer),R (Potential)
+tb <- table(wholeSet$tiprel_1mes)
+wholeSet$tiprel_1mes[is.na(wholeSet$tiprel_1mes)] <- names(which.max(tb))[1]
+table(wholeSet$tiprel_1mes)
+```
+
+```{r}
+# canal_entrada: channel used by the customer to join
+tb <- table(wholeSet$canal_entrada)
+wholeSet$canal_entrada[is.na(wholeSet$canal_entrada)] <- names(which.max(tb))[1]
+table(wholeSet$canal_entrada)
+```
+
+```{r}
+# nomprov
+wholeSet$nomprov[wholeSet$nomprov %>% is.na] <- "Unknown"
+wholeSet <- wholeSet[, nomprov:= as.factor(nomprov)]
+
+# cod_prov is redundant with nomprov
+wholeSet <- wholeSet[,cod_prov:=NULL]
+table(wholeSet$nomprov)
+commonFeatureNames <- commonFeatureNames[commonFeatureNames != "cod_prov"]
+```
+
+
+```{r}
+summary(wholeSet$renta)
+
+# renta 20.476 % missing is a very high number
+wholeSet$renta[wholeSet$renta %>% is.na] <- median(wholeSet$renta, na.rm = TRUE)
+```
+
+```{r}
+tb <- table(wholeSet$segmento)
+wholeSet$segmento[is.na(wholeSet$segmento)] <- names(which.max(tb))[1]
+table(wholeSet$segmento)
+```
+
+
+```{r}
+# ind_nomina_ult1: product feature
+testSetIndexes <- tail(1:nrow(wholeSet), nTest)
+wholeSet$ind_nomina_ult1[wholeSet$ind_nomina_ult1 %>% is.na] <- median(wholeSet$ind_nomina_ult1, na.rm = TRUE)
+wholeSet$ind_nomina_ult1[testSetIndexes] <- NA
+# ind_nom_pens_ult1: product feature
+wholeSet$ind_nom_pens_ult1[wholeSet$ind_nom_pens_ult1 %>% is.na] <- median(wholeSet$ind_nom_pens_ult1, na.rm = TRUE)
+wholeSet$ind_nom_pens_ult1[testSetIndexes] <- NA
+```
+
+Now we check if there still any missing values existing:
+
+```{r}
+CheckFeaturesWithNas(length(commonFeatureNames))
+```
+
+Now let us write the preprocessed datasets in files
+
+```{r}
+write.csv(wholeSet[1:nTrain, ], "preprocessed_train.csv", row.names = FALSE)
+write.csv(wholeSet[testSetIndexes,], "preprocessed_test.csv", row.names = FALSE)
+```
+
+
