@@ -1,11 +1,15 @@
 ---
 title: "Analysis"
-output: html_notebook
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
 ---
 
 Here is a summary of the trainset. In this dataset, we have two kinds of features/reponses: 1. common features (1-24) 2. product features (25-48)
 
-```{r}
+```{r, message=FALSE, warning=FALSE}
+options(warn=-1)
 require(data.table, quietly = TRUE)
 require(dplyr, quietly = TRUE)
 
@@ -17,16 +21,16 @@ colclasses <- list(
   character = c("sexo", "indrel", "indresi", "indext", "indfall", "conyuemp"),
   date = c("fecha_dato", "ult_fec_cli_1t", "fecha_alta"))
 naStrings <- c("", " ", "NA")
-trainSet <- fread("train.csv", verbose = FALSE, na.strings = naStrings)
+trainSet <- fread("../data/train.csv", verbose = FALSE, na.strings = naStrings)
 nTrain <- nrow(trainSet)
-featureDescription <- fread("description.csv", verbose = FALSE)
+featureDescription <- fread("../data/description.csv", verbose = FALSE)
 summary(trainSet)
 ```
 
 Note that indresi and indext may need special attention here, which is not taken care of right now.
 
-```{r}
-testSet <- fread("test.csv", header = TRUE, verbose = FALSE, na.strings = naStrings)
+```{r, , message=FALSE, warning=FALSE}
+testSet <- fread("../data/test.csv", header = TRUE, verbose = FALSE, na.strings = naStrings)
 nTest <- nrow(testSet)
 commonFeatureNames <- colnames(trainSet)[1:24]
 productFeatureNames <- colnames(trainSet)[25:48]
@@ -42,7 +46,7 @@ withTooManyNas <- naRatios > 0.9
 for (feature in names(which(withTooManyNas))){
   cat(sprintf("feature %s is removed, with NA ratio being %.3f.\n", feature, naRatios[feature]))  
 }
-wholeSet[, which(withTooManyNas):=NULL]
+wholeSet <- wholeSet[, which(withTooManyNas):=NULL]
 commonFeatureNames <- commonFeatureNames[!withTooManyNas]
 ```
 
@@ -55,7 +59,7 @@ for (feature in commonFeatureNames[which(withLittleVariance)]){
   cat(sprintf("feature %s is removed.\n", feature))  
 }
 
-wholeSet[, which(withLittleVariance):=NULL]
+wholeSet <- wholeSet[, which(withLittleVariance):=NULL]
 commonFeatureNames <- commonFeatureNames[which(!withLittleVariance[1:length(commonFeatureNames)])]
 ```
 
@@ -104,7 +108,7 @@ Now let us check these samples:
 
 ```{r}
 naDataTable <- wholeSet[areNas, ]
-tail(naDataTable, 15)
+tail(naDataTable[,1:24, with = FALSE], 5)
 ```
 
 It looks like these samples misses all common features. Let us verify the hypo:
@@ -133,13 +137,14 @@ So this hypo is not entirely true, but almost true. To see if it is safe to remo
 Then let us check if there are samples in test set like this:
 
 ```{r}
-is.na(testSet) %>% colSums
+is.na(testSet[,commonFeatureNames, with=FALSE]) %>% colSums
 ```
 
 As the results shows, we do not have instances with all common features missing to predict. So we can safely remove those broken data from whole/train dataset.
 
 ```{r}
 wholeSet <- wholeSet[!areNas, ]
+dim(wholeSet)
 ```
 
 Now we check again which features still have missing values
@@ -155,7 +160,6 @@ As we can see, we have 5 customers with gender info REALLY missing, we impute th
 # sexo
 uids <- wholeSet$ncodpers[is.na(wholeSet$sexo)] %>% unique()
 print(uids)
-wholeSet[wholeSet$ncodpers %in%uids, ]
 wholeSet$sexo[is.na(wholeSet$sexo)] <- "V"
 table(wholeSet$sexo)
 ```
@@ -200,7 +204,6 @@ commonFeatureNames <- commonFeatureNames[commonFeatureNames != "cod_prov"]
 
 ```{r}
 summary(wholeSet$renta)
-
 # renta 20.476 % missing is a very high number
 wholeSet$renta[wholeSet$renta %>% is.na] <- median(wholeSet$renta, na.rm = TRUE)
 ```
@@ -231,8 +234,8 @@ CheckFeaturesWithNas(length(commonFeatureNames))
 Now let us write the preprocessed datasets in files
 
 ```{r}
-write.csv(wholeSet[1:nTrain, ], "preprocessed_train.csv", row.names = FALSE)
-write.csv(wholeSet[testSetIndexes,], "preprocessed_test.csv", row.names = FALSE)
+write.csv(wholeSet[1:(nrow(wholeSet) - nrow(testSet)), ], "../data/preprocessed_train.csv", row.names = FALSE)
+write.csv(wholeSet[testSetIndexes,], "../data/preprocessed_test.csv", row.names = FALSE)
 ```
 
 
