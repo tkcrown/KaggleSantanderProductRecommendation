@@ -50,10 +50,10 @@ Note that
 
 may need special attention here, which is not taken care of right now.
 
-It is weird that **antiguedad** has value being -999999, which is supposed to be another way of reprensenting NAs.
+It is weird that **antiguedad** has value being -999999, which is supposed to be another way of reprensenting NAs. For safety purpose, we sets it to zero.
 
 ```{r}
-wholeSet[antiguedad == -999999, antiguedad := NA] %>% invisible
+wholeSet[antiguedad == -999999, antiguedad := 0] %>% invisible
 ```
 
 Let us remove the non-product features with too many NA values. The features to remove are
@@ -126,6 +126,7 @@ Now let us check these samples:
 
 ```{r}
 naDataTable <- wholeSet[areNas, ]
+sprintf("Total number of samples is %d", nrow(naDataTable)) %>% cat
 tail(naDataTable[,1:24, with = FALSE], 5)
 ```
 
