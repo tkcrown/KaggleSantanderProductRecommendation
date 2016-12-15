@@ -6,28 +6,34 @@ output:
   html_document: default
 ---
 
+```{r}
+naRatioThreshold <- 0.9
+```
 Here is a summary of the trainset. In this dataset, we have two kinds of features/reponses: 1. common features (1-24) 2. product features (25-48)
 
 ```{r, message=FALSE, warning=FALSE}
 options(warn=-1)
 require(data.table, quietly = TRUE)
+require(plyr, quietly = TRUE)
 require(dplyr, quietly = TRUE)
+
+featureDescription <- fread("../data/description.csv", verbose = FALSE)
 
 #the reason that five features are read as character is that they are actually binary variables easy to convert to 0,1
 colclasses <- list(
   integer = c("ncodpers", "ind_nuevo", "antiguedad", "age",  "ind_actividad_cliente"),
   numeric = c("renta"),
   factor = c("ind_empleado", "pais_residencia", "indrel_1mes", "tiprel_1mes",  "canal_entrada", "cod_prov", "nomprov", "segmento"),
-  character = c("sexo", "indrel", "indresi", "indext", "indfall", "conyuemp"),
+  # Binary variables
+  character = c("sexo", "indrel", "indresi", "indext", "indfall", "conyuemp"), 
   date = c("fecha_dato", "ult_fec_cli_1t", "fecha_alta"))
+
 naStrings <- c("", " ", "NA")
 trainSet <- fread("../data/train.csv", verbose = FALSE, na.strings = naStrings)
 nTrain <- nrow(trainSet)
-featureDescription <- fread("../data/description.csv", verbose = FALSE)
+
 summary(trainSet)
 ```
-
-Note that indresi and indext may need special attention here, which is not taken care of right now.
 
 ```{r, , message=FALSE, warning=FALSE}
 testSet <- fread("../data/test.csv", header = TRUE, verbose = FALSE, na.strings = naStrings)
@@ -38,43 +44,54 @@ testSet[,productFeatureNames] <- NA
 wholeSet <- rbindlist(list(trainSet, testSet))
 ```
 
+Note that 
+- **indresi** : Residence index (S (Yes) or N (No) if the residence country is the same than the bank country) 
+- **indext** : Foreigner index (S (Yes) or N (No) if the customer's birth country is different than the bank country) 
+
+may need special attention here, which is not taken care of right now.
+
+It is weird that **antiguedad** has value being -999999, which is supposed to be another way of reprensenting NAs.
+
+```{r}
+wholeSet[antiguedad == -999999, antiguedad := NA] %>% invisible
+```
+
 Let us remove the non-product features with too many NA values. The features to remove are
 
 ```{r}
 naRatios <- colMeans(is.na(wholeSet[, 1:24, with = FALSE]))
-withTooManyNas <- naRatios > 0.9
-for (feature in names(which(withTooManyNas))){
-  cat(sprintf("feature %s is removed, with NA ratio being %.3f.\n", feature, naRatios[feature]))  
+featureNamesWithTooManyNas <- names(which(naRatios > naRatioThreshold))
+for (feature in featureNamesWithTooManyNas){
+  cat(sprintf("feature %s is removed, with NA ratio being %.3f: %s\n", feature, naRatios[feature], featureDescription$Description[featureDescription$`Column Name` == feature]))
 }
-wholeSet <- wholeSet[, which(withTooManyNas):=NULL]
-commonFeatureNames <- commonFeatureNames[!withTooManyNas]
+wholeSet[, (featureNamesWithTooManyNas) := NULL] %>% invisible
+commonFeatureNames <- commonFeatureNames[!(commonFeatureNames %in% featureNamesWithTooManyNas)]
 ```
 
 Then we remove the numeric features with very little variance:
 
 ```{r}
-withLittleVariance <- sapply(commonFeatureNames, function(featureName) is.numeric(wholeSet[[featureName]]) && (var(wholeSet[[featureName]], na.rm = TRUE)) < 0.01)
-
-for (feature in commonFeatureNames[which(withLittleVariance)]){
+withLittleVariance <- sapply(wholeSet[,commonFeatureNames,with=FALSE], function(x) is.numeric(x) && var(x, na.rm = TRUE) < 0.01)
+featureNamesWithLittleVar <- commonFeatureNames[which(withLittleVariance)]
+for (feature in featureNamesWithLittleVar){
   cat(sprintf("feature %s is removed.\n", feature))  
 }
 
-wholeSet <- wholeSet[, which(withLittleVariance):=NULL]
-commonFeatureNames <- commonFeatureNames[which(!withLittleVariance[1:length(commonFeatureNames)])]
+wholeSet[, (featureNamesWithLittleVar) := NULL] %>% invisible
+commonFeatureNames <- commonFeatureNames[!(commonFeatureNames %in% featureNamesWithLittleVar)]
 ```
 
 Now let us look at the features with NAs
 ```{r}
-nCommonFeatures <- length(commonFeatureNames)
 nProductFeatures <- 24
-CheckFeaturesWithNas <- function(nCommonFeatures){
+CheckFeaturesWithNas <- function(commonFeatureNames, productFeatureNames){
   nTotal <- wholeSet %>% nrow
-  naRatioCommonFeatures <- sapply(wholeSet[, 1:nCommonFeatures, with = FALSE], function(feature) mean(is.na(feature)))
-  naRatioProductFeatures <- sapply(wholeSet[1:(nTotal-nTest), 1:nProductFeatures + nCommonFeatures, with = FALSE], function(feature) mean(is.na(feature)))
+  naRatioCommonFeatures <- sapply(wholeSet[, commonFeatureNames,with=FALSE], function(feature) mean(is.na(feature)))
+  naRatioProductFeatures <- sapply(wholeSet[1:(nTotal-nTest), productFeatureNames,with=FALSE], function(feature) mean(is.na(feature)))
   naRatio <- c(naRatioCommonFeatures, naRatioProductFeatures)
 
   hasNa <- naRatio != 0
-  colnamesWithNa <- colnames(wholeSet)[hasNa]
+  featureNamesWithNa <- colnames(wholeSet)[hasNa]
   naRatio <- naRatio[hasNa]
   if (length(naRatio) == 0){
     cat("No NAs!")
@@ -82,11 +99,12 @@ CheckFeaturesWithNas <- function(nCommonFeatures){
   }
 
   for(i in 1:length(naRatio)){
-    colname <- colnamesWithNa[i]
-    cat(sprintf("Col %s has %d NAs with ratio being %.3f %%: %s\n", colname, ceiling(naRatio[i] * nrow(wholeSet)), naRatio[i] * 100, featureDescription$Description[featureDescription$`Column Name` == colname]))
+    featureName <- featureNamesWithNa[i]
+    cat(sprintf("Col %s has %d NAs with ratio being %.3f %%: %s\n", featureName, ceiling(naRatio[i] * nrow(wholeSet)), naRatio[i] * 100, featureDescription$Description[featureDescription$`Column Name` == featureName]))
   }
 }
-CheckFeaturesWithNas(nCommonFeatures)
+
+CheckFeaturesWithNas(commonFeatureNames, productFeatureNames)
 ```
 
 It looks very suspiciout that some features have the same number of NAs. It turns out that it is the same set of samples that have those missing features: `ind_empleado`, `pais_residencia`, `age`, `fecha_alta`, `ind_nuevo`, `antiguedad`, `indrel`, `indresi`, `indext`, `indfall`.
@@ -164,13 +182,12 @@ wholeSet$sexo[is.na(wholeSet$sexo)] <- "V"
 table(wholeSet$sexo)
 ```
 
+
 ```{r}
 # indrel_1mes: Customer type at the beginning of the month ,1 (First/Primary customer), 2 (co-owner ),P (Potential),3 (former primary), 4(former co-owner)
 tb <- table(wholeSet$indrel_1mes)
-wholeSet$indrel_1mes[wholeSet$indrel_1mes == "1.0"] <- "1"
-wholeSet$indrel_1mes[wholeSet$indrel_1mes == "2.0"] <- "2"
-wholeSet$indrel_1mes[wholeSet$indrel_1mes == "3.0"] <- "3"
-wholeSet$indrel_1mes[wholeSet$indrel_1mes == "4.0"] <- "4"
+wholeSet[indrel_1mes != "P", indrel_1mes := sapply(indrel_1mes, substr, start = 1, stop = 1)] # "X.0" => "X"
+
 tb <- table(wholeSet$indrel_1mes)
 wholeSet$indrel_1mes[is.na(wholeSet$indrel_1mes)] <- names(which.max(tb))[1]
 table(wholeSet$indrel_1mes)
@@ -179,24 +196,24 @@ table(wholeSet$indrel_1mes)
 ```{r}
 # tiprel_1mes: Customer relation type at the beginning of the month, A (active), I (inactive), P (former customer),R (Potential)
 tb <- table(wholeSet$tiprel_1mes)
-wholeSet$tiprel_1mes[is.na(wholeSet$tiprel_1mes)] <- names(which.max(tb))[1]
+wholeSet[is.na(tiprel_1mes), tiprel_1mes := names(which.max(tb))[1]] 
 table(wholeSet$tiprel_1mes)
 ```
 
 ```{r}
 # canal_entrada: channel used by the customer to join
 tb <- table(wholeSet$canal_entrada)
-wholeSet$canal_entrada[is.na(wholeSet$canal_entrada)] <- names(which.max(tb))[1]
+wholeSet[is.na(canal_entrada), canal_entrada := names(which.max(tb))[1]] 
 table(wholeSet$canal_entrada)
 ```
 
 ```{r}
 # nomprov
-wholeSet$nomprov[wholeSet$nomprov %>% is.na] <- "Unknown"
-wholeSet <- wholeSet[, nomprov:= as.factor(nomprov)]
-
+wholeSet[nomprov %>% is.na, nomprov := "Unknown"]
+wholeSet[, nomprov:= as.factor(nomprov)]
+levels(wholeSet$nomprov) <- gsub(",", "", levels(wholeSet$nomprov))
 # cod_prov is redundant with nomprov
-wholeSet <- wholeSet[,cod_prov:=NULL]
+wholeSet <- wholeSet[, cod_prov := NULL]
 table(wholeSet$nomprov)
 commonFeatureNames <- commonFeatureNames[commonFeatureNames != "cod_prov"]
 ```
@@ -205,12 +222,12 @@ commonFeatureNames <- commonFeatureNames[commonFeatureNames != "cod_prov"]
 ```{r}
 summary(wholeSet$renta)
 # renta 20.476 % missing is a very high number
-wholeSet$renta[wholeSet$renta %>% is.na] <- median(wholeSet$renta, na.rm = TRUE)
+wholeSet[renta %>% is.na, renta := median(renta, na.rm = TRUE)]
 ```
 
 ```{r}
 tb <- table(wholeSet$segmento)
-wholeSet$segmento[is.na(wholeSet$segmento)] <- names(which.max(tb))[1]
+wholeSet[segmento %>% is.na, segmento := names(which.max(tb))[1]] 
 table(wholeSet$segmento)
 ```
 
@@ -228,14 +245,62 @@ wholeSet$ind_nom_pens_ult1[testSetIndexes] <- NA
 Now we check if there still any missing values existing:
 
 ```{r}
-CheckFeaturesWithNas(length(commonFeatureNames))
+nCommonFeatures <- length(commonFeatureNames)
+CheckFeaturesWithNas(nCommonFeatures)
+```
+
+Now let us transfer the two-value character/factor variables into binary variables:
+
+```{r}
+for (i in 1:nCommonFeatures){
+  if (is.character(wholeSet[[i]]) || is.factor(wholeSet[[i]])){
+    
+    wholeSet[[i]] <- wholeSet[[i]] %>% as.factor
+    
+    if (length(table(wholeSet[[i]])) == 2){
+      print(colnames(wholeSet)[i])
+      print(table(wholeSet[[i]]))
+      
+      wholeSet[[i]] <- mapvalues(wholeSet[[i]], from = levels(wholeSet[[i]]), to = c("0", "1"))
+      print(table(wholeSet[[i]]))
+     }
+  }
+}
+
+wholeSet$indrel[wholeSet$indrel == 99] <- 0
+wholeSet$indrel_1mes <- mapvalues(wholeSet$indrel_1mes, from = levels(wholeSet$indrel_1mes), to = c("L1", "L2", "L3", "L4", "P"))
 ```
 
 Now let us write the preprocessed datasets in files
 
 ```{r}
-write.csv(wholeSet[1:(nrow(wholeSet) - nrow(testSet)), ], "../data/preprocessed_train.csv", row.names = FALSE)
-write.csv(wholeSet[testSetIndexes,], "../data/preprocessed_test.csv", row.names = FALSE)
+fwrite(wholeSet[1:(nrow(wholeSet) - nrow(testSet)), ], "../data/preprocessed_train.csv", row.names = FALSE, quote = FALSE)
+fwrite(wholeSet[testSetIndexes,1:nCommonFeatures, with = FALSE], "../data/preprocessed_test.csv", row.names = FALSE, quote = FALSE)
 ```
 
+Let us take the t-1 time products as features into consideration.
+```{r}
+wholeSet$fecha_dato <- as.Date(wholeSet$fecha_dato)
+wholeSet <- wholeSet[order(ncodpers, fecha_dato)]
+testDate <- as.Date("2016-06-28")
+previousTimeProductNames <- paste0(productFeatureNames, "_minus_one")
+newSet <- wholeSet
+newSet[, previousTimeProductNames] <- 0L
+numRows <- nrow(newSet)
+newSet[2:numRows, previousTimeProductNames] <- newSet[1:(numRows-1), productFeatureNames, with = FALSE]
+newSet[c(TRUE, ncodpers[1:(numRows-1)] != ncodpers[2:numRows]), previousTimeProductNames] <- 0
+#for "2015-01-28", we are not sure if the customers are new commers
+newSet <- newSet[fecha_dato != as.Date("2015-01-28")]
+```
 
+Let us see if we lose any test samples
+
+```{r}
+uids <- newSet[fecha_dato == as.Date("2016-06-28"), unique(ncodpers)]
+testSet[!(ncodpers %in% uids)]
+```
+
+```{r}
+fwrite(newSet[fecha_dato != as.Date(testDate), ], "../data/preprocessed_train_time.csv", row.names = FALSE, quote = FALSE)
+fwrite(newSet[fecha_dato == as.Date(testDate), c(commonFeatureNames, previousTimeProductNames), with = FALSE], "../data/preprocessed_test_time.csv", row.names = FALSE, quote = FALSE)
+```
