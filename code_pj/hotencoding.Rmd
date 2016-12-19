@@ -1,0 +1,87 @@
+
+```{r, message=FALSE, warning=FALSE}
+require(data.table)
+require(dplyr)
+trainSet <- fread("../data/preprocessed_train.csv", verbose = FALSE)
+testSet <- fread("../data/preprocessed_test.csv", verbose = FALSE)
+commonFeatureNames<-testSet %>% colnames
+allFeatureNames<-trainSet %>% colnames
+productNames <- allFeatureNames[!(allFeatureNames %in% commonFeatureNames)]
+testSet[,productNames] <- NA
+wholeSet <- rbindlist(list(trainSet, testSet))
+rm(trainSet)
+rm(testSet)
+```
+Now let us transfer the two-value character/factor variables into binary variables:
+
+```{r, message=FALSE, warning=FALSE}
+binaryFeatures <- c("sexo", "ind_nuevo", "indrel", "indresi", "indext", "indfall", "ind_actividad_cliente")
+categFeatures <- c("segmento", "indrel_1mes", "tiprel_1mes", "ind_empleado", "pais_residencia", "canal_entrada", "nomprov")
+
+# process the date: fecha_alta
+require(Hmisc)
+wholeSet[, fecha_alta_int := as.integer(cut2(as.numeric(as.Date(wholeSet$fecha_alta)), g=20))-1] %>% invisible
+wholeSet[, fecha_alta := NULL] %>% invisible
+commonFeatureNames[commonFeatureNames == "fecha_alta"] = "fecha_alta_int"
+for (categFeature in binaryFeatures){
+  if (length(table(wholeSet[[categFeature]]))!=2) stop("NOT BINARY")
+  print(categFeature)
+  wholeSet[,(categFeature):=as.integer(as.factor(wholeSet[[categFeature]]))-1] %>% invisible
+}
+
+# segmento
+wholeSet[,segmento:=as.integer(as.factor(segmento))] %>% invisible
+
+# indrel_1mes
+wholeSet[,indrel_1mes:=as.integer(as.factor(indrel_1mes))] %>% invisible
+
+# tiprel_1mes
+wholeSet[,tiprel_1mes:=as.integer(as.factor(tiprel_1mes))] %>% invisible
+
+# ind_empleado
+wholeSet[,ind_empleado:=as.integer(as.factor(ind_empleado))] %>% invisible
+
+# pais_residencia: Country residence
+minorities <- which((wholeSet$pais_residencia %>% table %>% sort) < 1500) %>% names
+wholeSet[pais_residencia %in% minorities, pais_residencia:="MI"] %>% invisible
+
+# canal_entrada: join channel
+minorities <- which((wholeSet$canal_entrada %>% table %>% sort) < 1500) %>% names
+wholeSet[canal_entrada %in% minorities, canal_entrada:="MIN"] %>% invisible
+
+fwrite(wholeSet,"../data/tempWholeSet.csv", row.names = FALSE, quote = FALSE)
+commonFeatureNamesBackUp <- commonFeatureNames
+```
+
+```{r one_hot_encoding}
+require(Matrix)
+ohe_feats = categFeatures #c('canal_entrada', 'pais_residencia', 'nomprov', "ind_empleado")
+for (feature in ohe_feats){
+  wholeSet[,(feature):=as.factor(wholeSet[[feature]])] %>% invisible
+}
+sparse_matrix <- sparse.model.matrix( ~ .-1, data = wholeSet[,(ohe_feats),with=FALSE])
+for(sparse_feature in dimnames(sparse_matrix)[[2]]){
+  #print(sparse_feature)
+  wholeSet[,(sparse_feature) := unname(sparse_matrix[,sparse_feature])] %>% invisible
+}
+
+for (feature in ohe_feats){
+  wholeSet[,(feature):=NULL]
+}
+commonFeatureNames <- commonFeatureNames[!(commonFeatureNames %in% ohe_feats)]
+commonFeatureNames <- c(commonFeatureNames, dimnames(sparse_matrix)[[2]])
+```
+
+```{r}
+for (feature in productFeatureNames){
+  newFeatureName <- paste0(feature,"_unsubscribed")
+  wholeSet[before15June, (newFeatureName) := as.integer(any(head(get(feature), -1) - tail(get(feature), -1) == 1), na.rm = T), by=ncodpers]
+  wholeSet[, (newFeatureName) := c(.SD[as.Date(fecha_dato) < as.Date("2015-06-28"), (newFeatureName), with=FALSE], 
+                                   as.integer(any(head(get(feature), -1) - tail(get(feature), -1) == 1), na.rm = T)[as.Date(fecha_dato) >= as.Date("2015-06-28")]), by=ncodpers]
+}
+```
+
+```{r}
+fwrite(wholeSet[fecha_dato != "2016-06-28"], "../data/onehot_train.csv", row.names = FALSE, quote = FALSE)
+fwrite(wholeSet[fecha_dato == "2016-06-28", commonFeatureNames, with = FALSE], "../data/onehot_test.csv", row.names = FALSE, quote = FALSE)
+```
